@@ -1,0 +1,7 @@
+[
+    {"step": 1, "action_type": "view_student", "reward": 0.15, "done": false},
+    {"step": 2, "action_type": "issue_refund", "payload": {"message": "Issuing full refund as requested."}, "reward": 0.35, "done": false},
+    {"step": 3, "action_type": "close_ticket", "reward": 0.3, "done": true},
+    {"step": 4, "action_type": "reply", "payload": {"message": "Certificates are generated nightly. Please wait 24h."}, "reward": 0.2, "done": false},
+    {"step": 5, "action_type": "close_ticket", "reward": 0.3, "done": true}
+]

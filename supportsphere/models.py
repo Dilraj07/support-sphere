@@ -68,6 +68,9 @@ class SupportSphereObservation(Observation):
     system_time: int = Field(
         default=0, description="Current step count within the episode"
     )
+    student_sentiment: Literal["neutral", "frustrated", "escalated", "satisfied"] = Field(
+        default="neutral", description="Current emotional state of the student"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -98,4 +101,8 @@ class SupportSphereState(State):
     escalated: bool = Field(
         default=False,
         description="Whether the ticket was escalated",
+    )
+    student_sentiment: Literal["neutral", "frustrated", "escalated", "satisfied"] = Field(
+        default="neutral",
+        description="Tracks the emotional progression of the student (for WOW reward shaping)",
     )

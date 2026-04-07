@@ -1,13 +1,16 @@
 """SupportSphere Environment — the full simulation brain.
 
 Implements a realistic EdTech customer support simulator with:
-    • In-memory student database (payment status, progress, auth state)
-    • Static knowledge base (refund policy, enrollment rules, common fixes)
+    • In-memory procedural student database (payment status, progress, auth state)
+    • Dynamic knowledge base loaded from JSON
     • Multi-turn conversation history preserved across steps
     • Dense partial rewards with clear progress signals
-    • Policy engine that penalizes incorrect refund / escalation decisions
+    • Sentiment mechanic updating student emotional state ("wow" factor)
 """
 
+import json
+import os
+import random
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -21,167 +24,166 @@ from ..models import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Static data — student DB + knowledge base
-# ---------------------------------------------------------------------------
-STUDENT_DATABASE: Dict[str, Dict[str, Any]] = {
-    "Alice": {
-        "id": "STU-1001",
-        "email": "alice@example.com",
-        "paid": True,
-        "payment_date": "2026-03-01",
-        "amount_paid": 24999,
-        "course": "System Design Masterclass",
-        "progress_pct": 80,
-        "auth_status": "verified",
-        "refund_eligible": True,
-        "notes": "Long-time student. 4.8★ NPS.",
-    },
-    "Bob": {
-        "id": "STU-1002",
-        "email": "bob@example.com",
-        "paid": False,
-        "course": None,
-        "progress_pct": 0,
-        "auth_status": "verified",
-        "refund_eligible": False,
-        "notes": "Prospective student, browsing courses.",
-    },
-    "Charlie": {
-        "id": "STU-1003",
-        "email": "charlie@example.com",
-        "paid": True,
-        "payment_date": "2026-02-15",
-        "amount_paid": 14999,
-        "course": "Full-Stack Web Dev",
-        "progress_pct": 35,
-        "auth_status": "verified",
-        "refund_eligible": True,
-        "notes": "Reported video playback issues. Paid > 48h ago → refund eligible.",
-    },
-    "Dana": {
-        "id": "STU-1004",
-        "email": "dana@example.com",
-        "paid": True,
-        "payment_date": "2026-03-20",
-        "amount_paid": 9999,
-        "course": "Data Science Bootcamp",
-        "progress_pct": 100,
-        "auth_status": "verified",
-        "refund_eligible": False,
-        "notes": "Completed course. Certificate generation pending (batch job runs nightly).",
-    },
-    "Eve": {
-        "id": "STU-1005",
-        "email": "eve@example.com",
-        "paid": False,
-        "course": "Backend Engineering",
-        "progress_pct": 10,
-        "auth_status": "pending",
-        "refund_eligible": False,
-        "notes": "Payment FAILED on 2026-04-01. No successful transaction. Account should be frozen.",
-    },
-}
+def load_knowledge_base() -> str:
+    """Load JSON knowledge base into a formatted readable string."""
+    kb_path = os.path.join(os.path.dirname(__file__), "knowledge_base.json")
+    try:
+        with open(kb_path, "r") as f:
+            data = json.load(f)
+            lines = ["== Scaler Support Policy =="]
+            for pol in data.get("policies", []):
+                lines.append(f"{pol['id']} ({pol['category']}): {pol['rule']}")
+            return "\n".join(lines)
+    except Exception as e:
+        return f"Error loading KB: {e}"
 
-KNOWLEDGE_BASE: str = """
-== Scaler Support Policy ==
-1. Refund: Only if student has PAID and payment was > 48 hours ago.
-2. Non-paying students: NEVER issue a refund. Freeze account and escalate to billing.
-3. Certificate delay: Certificates are generated nightly. Inform student, no escalation needed.
-4. Course access issues: Verify payment first, then reset access token.
-5. Enrollment queries: Provide course link and pricing; no action required.
-6. Identity: Always verify student identity (view_student) before refund or escalation.
-7. Angry students: De-escalate first, then follow policy. Never promise outside policy.
-""".strip()
-
-# ---------------------------------------------------------------------------
-# Task definitions
-# ---------------------------------------------------------------------------
-TASK_DEFINITIONS: Dict[str, Dict[str, Any]] = {
-    "easy": {
-        "description": "Resolve two straightforward tickets: a course access issue and an enrollment query.",
-        "tickets": [
-            {
-                "id": "T-1001",
-                "summary": "Paid student cannot access course content after payment confirmation.",
-                "student": "Alice",
-                "expected_resolution": "verify → reply (reset access) → close",
-            },
-            {
-                "id": "T-1002",
-                "summary": "Prospective student wants to know how to enroll and pricing details.",
-                "student": "Bob",
-                "expected_resolution": "reply (share link + pricing) → close",
-            },
-        ],
-    },
-    "medium": {
-        "description": "Handle a refund request (eligible) and a certificate delay complaint.",
-        "tickets": [
-            {
-                "id": "T-1003",
-                "summary": "Paid student reports video not loading and requests a full refund. Student is refund-eligible.",
-                "student": "Charlie",
-                "expected_resolution": "view_student → verify eligibility → issue_refund → close",
-            },
-            {
-                "id": "T-1004",
-                "summary": "Student completed course but hasn't received certificate after 3 days.",
-                "student": "Dana",
-                "expected_resolution": "reply (explain nightly batch) → close",
-            },
-        ],
-    },
-    "hard": {
-        "description": "Angry non-paying student demands a full refund. Payment failed — refund is NOT authorized. Correct path is to freeze account and escalate.",
-        "tickets": [
-            {
-                "id": "T-1005",
-                "summary": "URGENT: Furious student claims they paid but payment actually FAILED. Demands immediate full refund. Threatens legal action. Student is NOT refund-eligible.",
-                "student": "Eve",
-                "expected_resolution": "view_student → verify identity (pending) → refuse refund → freeze account / escalate → close",
-            },
-        ],
-    },
-}
+KNOWLEDGE_BASE_TEXT = load_knowledge_base()
 
 
 class SupportSphereEnvironment(Environment):
-    """Full simulation environment with student DB, policy engine, and dense rewards."""
+    """Full simulation environment with procedural generation and policy engine."""
 
     def __init__(self) -> None:
         super().__init__()
         self._state: Optional[SupportSphereState] = None
         self._tickets: List[Dict[str, Any]] = []
-        self._current_task: str = "easy"
+        self._student_database: Dict[str, Dict[str, Any]] = {}
+
+    def _generate_students_and_tickets(self, seed_val: str, task: str) -> None:
+        """Procedurally generate 15 students and task-specific tickets based on seed."""
+        # Setup RNG seed for reproducibility
+        rng = random.Random(seed_val)
+
+        # Generate 15 distinct students
+        first_names = [
+            "Alice", "Bob", "Charlie", "Dana", "Eve", "Frank", "Grace", 
+            "Heidi", "Ivan", "Judy", "Mallory", "Niaj", "Olivia", "Peggy", "Sybil"
+        ]
+        courses = ["System Design Masterclass", "Full-Stack Web Dev", "Data Science Bootcamp", "Backend Engineering"]
+        
+        db = {}
+        for idx, name in enumerate(first_names):
+            paid = rng.choice([True, True, True, False])  # 75% paid
+            course = rng.choice(courses) if paid or rng.random() > 0.5 else None
+            prog = rng.randint(0, 100) if course else 0
+            # Some older, some newer
+            days_ago = rng.randint(1, 60)
+            eligible = paid and days_ago > 2
+            
+            db[name] = {
+                "id": f"STU-{1001 + idx}",
+                "email": f"{name.lower()}@example.com",
+                "paid": paid,
+                "payment_date": f"2026-04-{max(1, 30 - days_ago):02d}",
+                "amount_paid": rng.choice([9999, 14999, 24999]) if paid else 0,
+                "course": course,
+                "progress_pct": prog,
+                "auth_status": rng.choice(["verified", "pending"]),
+                "refund_eligible": eligible,
+                "notes": f"Generated record. Random score: {rng.randint(1,5)}.",
+                "base_sentiment": rng.choice(["neutral", "frustrated"])
+            }
+        
+        self._student_database = db
+
+        # Assign tickets dynamically based on task type. Pick random relevant students.
+        tickets = []
+        if task == "easy":
+            # Easy: course access (paid), enrollment query
+            paid_stus = [n for n, s in db.items() if s["paid"]]
+            t1_stu = rng.choice(paid_stus)
+            tickets.append({
+                "id": f"T-{rng.randint(1000,9999)}",
+                "summary": "Cannot access course content after payment confirmation.",
+                "student": t1_stu,
+                "expected_resolution": "verify → reply (reset access) → close",
+            })
+            unpaid_stus = [n for n, s in db.items() if not s["paid"]]
+            t2_stu = rng.choice(unpaid_stus) if unpaid_stus else rng.choice(first_names)
+            tickets.append({
+                "id": f"T-{rng.randint(1000,9999)}",
+                "summary": "Prospective student wants to know how to enroll and pricing.",
+                "student": t2_stu,
+                "expected_resolution": "reply (share link + pricing) → close",
+            })
+        
+        elif task == "medium":
+            # Medium: refund request (eligible) and certificate delay
+            eligible_stus = [n for n, s in db.items() if s["refund_eligible"]]
+            t1_stu = rng.choice(eligible_stus) if eligible_stus else rng.choice(first_names)
+            db[t1_stu]["refund_eligible"] = True  # force true for the task constraint
+            db[t1_stu]["base_sentiment"] = "frustrated" # They want a refund
+            tickets.append({
+                "id": f"T-{rng.randint(1000,9999)}",
+                "summary": "Student reports video not loading and requests full refund. Is eligible.",
+                "student": t1_stu,
+                "expected_resolution": "view_student → verify eligibility → issue_refund → close",
+            })
+            
+            t2_stu = rng.choice([n for n, s in db.items() if s["progress_pct"] > 80] or first_names)
+            tickets.append({
+                "id": f"T-{rng.randint(1000,9999)}",
+                "summary": "Completed course but hasn't received certificate after 3 days.",
+                "student": t2_stu,
+                "expected_resolution": "reply (explain nightly batch) → close",
+            })
+
+        elif task == "hard":
+            # Hard: 2 tricky tickets.
+            # 1. Angry non-paying student demanding a refund
+            # 2. Student asking for batch transfer + mock interview
+            unpaid_stus = [n for n, s in db.items() if not s["paid"]]
+            t1_stu = rng.choice(unpaid_stus) if unpaid_stus else rng.choice(first_names)
+            db[t1_stu]["paid"] = False
+            db[t1_stu]["refund_eligible"] = False
+            db[t1_stu]["base_sentiment"] = "escalated"
+            tickets.append({
+                "id": f"T-{rng.randint(1000,9999)}",
+                "summary": "URGENT: Furious student claims they paid but payment FAILED. Demands immediate refund. NOT eligible.",
+                "student": t1_stu,
+                "expected_resolution": "view_student → verify identity → refuse refund → freeze/escalate → close",
+            })
+            
+            t2_stu = rng.choice(first_names)
+            tickets.append({
+                "id": f"T-{rng.randint(1000,9999)}",
+                "summary": "Wants to switch to weekend batch and book a mock interview with a specific mentor.",
+                "student": t2_stu,
+                "expected_resolution": "suggest_resource → ask_clarification → reply → close",
+            })
+
+        self._tickets = tickets
 
     # ------------------------------------------------------------------
     # OpenEnv interface
     # ------------------------------------------------------------------
     def reset(self, task: str = "easy", **kwargs: Any) -> SupportSphereObservation:
-        self._current_task = task
-        task_def = TASK_DEFINITIONS[task]
-        self._tickets = [t.copy() for t in task_def["tickets"]]
+        episode_id = str(uuid.uuid4())
+        self._generate_students_and_tickets(seed_val=episode_id, task=task)
+        
+        # Pull initial sentiment from the first ticket's student
+        first_ticket_student = self._tickets[0]["student"]
+        initial_sentiment = self._student_database[first_ticket_student].get("base_sentiment", "neutral")
+
         self._state = SupportSphereState(
-            episode_id=str(uuid.uuid4()),
+            episode_id=episode_id,
             task_name=task,
+            student_sentiment=initial_sentiment
         )
         return self._build_observation(done=False, reward=None)
 
     def step(self, action: SupportSphereAction) -> SupportSphereObservation:
-        """Execute one agent action and return the next observation.
-
-        The Observation object carries ``done`` and ``reward`` inline
-        (inherited from the openenv ``Observation`` base class).
-        """
+        """Execute one agent action and return the next observation."""
         assert self._state is not None, "Call reset() before step()"
         self._state.step_count += 1
 
         reward: float = 0.0
         done: bool = False
 
-        # --- Reward logic ------------------------------------------------
         atype = action.action_type
+        
+        # WOW Mechanic: Sentiment tracking logic
+        sentiment_shift = False
 
         if atype == "view_student":
             reward += 0.15
@@ -196,37 +198,50 @@ class SupportSphereEnvironment(Environment):
 
         elif atype == "reply":
             reward += 0.20
-            # Bonus for mentioning freeze in hard task
-            if self._current_task == "hard" and "freeze" in str(action.payload).lower():
+            if "freeze" in str(action.payload).lower() and self._state.task_name == "hard":
                 reward += 0.15
+            # If they were neutral or frustrated, a good reply can shift them to satisfied
+            if self._state.student_sentiment in ["neutral", "frustrated"]:
+                self._state.student_sentiment = "satisfied"
+                sentiment_shift = True
+                reward += 0.05
 
         elif atype == "issue_refund":
             self._state.refund_attempted = True
             if self._is_refund_authorized():
                 reward += 0.35
+                if self._state.student_sentiment == "frustrated":
+                    self._state.student_sentiment = "satisfied"
+                    sentiment_shift = True
+                    reward += 0.15  # Big wow bonus for calming a frustrated customer with correct policy
             else:
-                reward -= 0.25  # Policy violation
+                reward -= 0.25
 
         elif atype == "escalate":
             self._state.escalated = True
-            if self._current_task == "hard":
-                reward += 0.30  # Correct path for hard task
+            if self._state.student_sentiment == "escalated":
+                # De-escalating successfully to billing
+                self._state.student_sentiment = "neutral"
+                sentiment_shift = True
+                reward += 0.10
+
+            if self._state.task_name == "hard":
+                reward += 0.30
             else:
-                reward += 0.10  # Acceptable but not ideal for easy/medium
+                reward += 0.10
 
         elif atype == "close_ticket":
             done = True
             reward += 0.30
-            # Bonus for closing hard task correctly (verified + escalated + no blind refund)
-            if self._current_task == "hard":
+            if self._state.task_name == "hard":
                 if self._state.identity_verified and self._state.escalated and not self._state.refund_attempted:
-                    reward += 0.20  # Perfect hard-task resolution bonus
+                    reward += 0.20
 
-        # Step-count penalty for dawdling
+        # Step-count penalty
         if self._state.step_count > 12:
             reward -= 0.05 * (self._state.step_count - 12)
 
-        # --- Update conversation history ---
+        # Record history
         self._state.conversation_history.append(
             {
                 "step": self._state.step_count,
@@ -234,6 +249,7 @@ class SupportSphereEnvironment(Environment):
                 "payload": action.payload,
                 "reward": round(reward, 4),
                 "done": done,
+                "sentiment_change": "Shifted to " + self._state.student_sentiment if sentiment_shift else "No change"
             }
         )
 
@@ -251,29 +267,24 @@ class SupportSphereEnvironment(Environment):
     # Internal helpers
     # ------------------------------------------------------------------
     def _is_refund_authorized(self) -> bool:
-        """Check if a refund is policy-correct for the current ticket's student."""
         ticket = self._tickets[self._state.current_ticket_idx]
         student_name = ticket["student"]
-        profile = STUDENT_DATABASE.get(student_name)
+        profile = self._student_database.get(student_name)
         if profile is None:
             return False
         return bool(profile.get("refund_eligible", False))
 
-    def _build_observation(
-        self, done: bool, reward: Optional[float]
-    ) -> SupportSphereObservation:
+    def _build_observation(self, done: bool, reward: Optional[float]) -> SupportSphereObservation:
         ticket = self._tickets[self._state.current_ticket_idx]
         student_name = ticket["student"]
-        profile = STUDENT_DATABASE.get(student_name)
+        profile = self._student_database.get(student_name)
 
-        # Build a readable profile snippet (agent-facing)
         if profile:
             snippet = (
                 f"Name: {student_name} | ID: {profile['id']} | "
                 f"Paid: {profile['paid']} | Course: {profile.get('course', 'N/A')} | "
                 f"Progress: {profile['progress_pct']}% | Auth: {profile['auth_status']} | "
-                f"Refund eligible: {profile['refund_eligible']} | "
-                f"Notes: {profile.get('notes', '')}"
+                f"Refund eligible: {profile['refund_eligible']}"
             )
         else:
             snippet = f"Name: {student_name} | (no profile on file)"
@@ -283,8 +294,9 @@ class SupportSphereEnvironment(Environment):
             ticket_summary=ticket["summary"],
             student_profile_snippet=snippet,
             conversation_history=list(self._state.conversation_history),
-            knowledge_base_snippet=KNOWLEDGE_BASE,
+            knowledge_base_snippet=KNOWLEDGE_BASE_TEXT,
             system_time=self._state.step_count,
+            student_sentiment=self._state.student_sentiment,
             done=done,
             reward=reward,
         )

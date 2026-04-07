@@ -1,0 +1,58 @@
+{
+    "policies": [
+        {
+            "id": "POL_01",
+            "category": "Refunds",
+            "rule": "Only issue a refund if the student has PAID, the payment was > 48 hours ago, and they are eligible. Never issue refunds for failed payments.",
+            "action": "issue_refund"
+        },
+        {
+            "id": "POL_02",
+            "category": "Non-Paying Refunds",
+            "rule": "For non-paying students demanding refunds, NEVER issue a refund. Freeze their account and escalate to the billing department immediately.",
+            "action": "escalate"
+        },
+        {
+            "id": "POL_03",
+            "category": "Certificates",
+            "rule": "Certificates are generated nightly via a batch process. If a student recently completed a course and hasn't received it, inform them to wait 24-48 hours. No escalation needed.",
+            "action": "reply"
+        },
+        {
+            "id": "POL_04",
+            "category": "Course Access",
+            "rule": "If a paid student cannot access content, verify their payment first. Once verified, reset their access token using standard troubleshooting reply.",
+            "action": "reply"
+        },
+        {
+            "id": "POL_05",
+            "category": "Enrollment Queries",
+            "rule": "If a prospective student asks about enrollment or pricing, provide the course link and pricing details. Do not escalate.",
+            "action": "reply"
+        },
+        {
+            "id": "POL_06",
+            "category": "Identity Verification",
+            "rule": "Always verify a student's identity (using view_student) before taking any destructive action, processing a refund, or escalating.",
+            "action": "view_student"
+        },
+        {
+            "id": "POL_07",
+            "category": "De-escalation",
+            "rule": "For angry or abusive students, de-escalate politely first. Ensure strict adherence to company policy. Never make promises outside defined rules.",
+            "action": "reply"
+        },
+        {
+            "id": "POL_08",
+            "category": "Batch Transfers",
+            "rule": "Students can request to move to a different learning batch only within the first 14 days of enrollment. Suggest the batch_transfer resource link if requested.",
+            "action": "suggest_resource"
+        },
+        {
+            "id": "POL_09",
+            "category": "Mock Interviews",
+            "rule": "Mock interview scheduling is subject to mentor availability. Direct students to the scheduling board. Ask for clarification if they mention a specific mentor.",
+            "action": "ask_clarification"
+        }
+    ]
+}
