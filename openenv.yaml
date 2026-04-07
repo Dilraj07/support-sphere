@@ -1,0 +1,15 @@
+name: supportsphere
+version: "0.1.0"
+description: >
+  Real-world EdTech customer support simulator (Scaler-style).
+  3 deterministic tasks (easy → medium → hard) with dense partial rewards
+  and fully deterministic graders returning exact 0.0–1.0 float scores.
+spec_version: 1
+entrypoint:
+  server: "supportsphere.server.app:app"
+  client: "supportsphere.client:SupportSphereEnv"
+docker:
+  build:
+    context: .
+    dockerfile: Dockerfile
+  platform: linux/amd64
