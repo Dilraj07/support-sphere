@@ -1,0 +1,10 @@
+[
+    {"step": 1, "action_type": "view_student", "reward": 0.15, "done": false},
+    {"step": 2, "action_type": "reply", "payload": {"message": "You violated TOS, account freeze"}, "reward": 0.35, "done": false},
+    {"step": 3, "action_type": "escalate", "reward": 0.30, "done": false},
+    {"step": 4, "action_type": "close_ticket", "reward": 0.50, "done": true},
+    {"step": 5, "action_type": "suggest_resource", "payload": {"message": "Use the batch transfer link."}, "reward": 0.10, "done": false},
+    {"step": 6, "action_type": "ask_clarification", "payload": {"message": "Which mentor do you want to schedule with?"}, "reward": 0.10, "done": false},
+    {"step": 7, "action_type": "reply", "payload": {"message": "I have marked your preference on the scheduling board."}, "reward": 0.20, "done": false},
+    {"step": 8, "action_type": "close_ticket", "reward": 0.30, "done": true}
+]

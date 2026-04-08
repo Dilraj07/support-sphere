@@ -1,0 +1,18 @@
+[project]
+name = "supportsphere"
+version = "0.1.0"
+description = "SupportSphere — Real-world EdTech customer support simulator for autonomous AI agent evaluation"
+dependencies = [
+    "openenv-core>=0.2.1",
+    "fastapi",
+    "uvicorn",
+    "pydantic>=2.0",
+    "openai",
+    "python-dotenv",
+]
+
+[tool.uv]
+dev-dependencies = ["pytest", "httpx"]
+
+[project.scripts]
+server = "server.app:main"
