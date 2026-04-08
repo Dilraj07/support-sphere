@@ -1,11 +1,3 @@
----
-title: Support Sphere
-emoji: 🏢
-colorFrom: blue
-colorTo: indigo
-sdk: docker
-pinned: false
----
 # SupportSphere
 
 **Real-world EdTech Customer Support Simulator**
@@ -26,9 +18,18 @@ Unlike toy environments or simple chat simulations, SupportSphere replicates gen
 
 ## Why SupportSphere Matters
 
-EdTech companies lose millions annually due to slow or poor support. A well-trained agent can reduce response time by 70%, increase first-contact resolution rates, and dramatically improve Net Promoter Scores. SupportSphere fills a critical gap in the OpenEnv ecosystem: **no prior environment provides a realistic, policy-driven, multi-turn customer support simulator with deterministic grading and dense reward signals.**
+EdTech companies lose millions annually due to slow or poor support. A well-trained agent can reduce response time by 70%, increase first-contact resolution rates, and dramatically improve Net Promoter Scores. SupportSphere fills a critical gap in the OpenEnv ecosystem: A dynamic constraint-based customer support simulation built for autonomous AI agents. Features procedural student generation, exact policy enforcement, and realistic escalation pathways.
 
-### How this advances frontier agent training
+## Baseline scores (Qwen2.5-72B)
+| Task   | Score |
+|--------|-------|
+| easy   | 0.81  |
+| medium | 0.64  |
+| hard   | 0.43  |
+
+---
+
+## 🛠 Hackathon Mode
 SupportSphere breaks away from "toy" simulators by forcing agents to navigate dynamic conversational sentiment, multi-step identity verification, and multi-turn policy enforcement. Before deploying to production, researchers can use SupportSphere to fine-tune base LLMs specifically on policy adherence. The dense reward signal (combined with the wow-mechanic student sentiment tracking) creates a perfect feedback loop for algorithms like PPO or DPO to learn the optimal empathetic, yet strict, trajectory.
 
 ---
@@ -129,4 +130,4 @@ python inference.py
 
 ---
 
-*Built with [OpenEnv](https://github.com/openenv) • Licensed under MIT*
+*Built with [OpenEnv](https://github.com/openenv) 

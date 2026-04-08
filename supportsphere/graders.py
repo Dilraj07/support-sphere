@@ -100,6 +100,8 @@ def grade_hard(trajectory: List[Dict]) -> float:
     )
     if not blind_refund:
         score += 0.25
+    else:
+        score -= 0.5  # Destructive penalty for unauthorized refund
 
     # 3. Correct resolution path — freeze or escalate
     freeze_or_escalate: bool = any(
@@ -115,7 +117,7 @@ def grade_hard(trajectory: List[Dict]) -> float:
     if completed:
         score += 0.25
 
-    return max(0.0, min(1.0, score))
+    return max(0.0, min(1.0, float(score)))
 
 
 def grade_task(task_name: str, trajectory: List[Dict]) -> float:
