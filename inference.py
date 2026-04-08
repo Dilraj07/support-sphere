@@ -198,79 +198,83 @@ def main() -> None:
         rewards: List[float] = []
         trajectory: List[Dict] = []
         steps_taken: int = 0
+        env_score: float = 0.0
+        grader_score: float = 0.0
+        success: bool = False
 
-        obs = env.reset(task=task_name)
+        try:
+            obs = env.reset(task=task_name)
 
-        for step in range(1, 8):
-            if obs.done:
-                break
-
-            prompt = build_user_prompt(
-                ticket_id=obs.current_ticket_id,
-                ticket_summary=obs.ticket_summary,
-                student_info=obs.student_profile_snippet,
-                kb=obs.knowledge_base_snippet or "",
-                conversation=obs.conversation_history,
-                step=step,
-            )
-
-            # Rate limiting: Gemini free tier = 5 RPM -> wait 13s between calls
-            if step > 1:
-                time.sleep(13)
-
-            raw_text = ""
-            for attempt in range(3):
-                try:
-                    completion = client.chat.completions.create(
-                        model=MODEL_NAME,
-                        messages=[
-                            {"role": "system", "content": SYSTEM_PROMPT},
-                            {"role": "user", "content": prompt},
-                        ],
-                        temperature=0.0,
-                        max_tokens=400,
-                    )
-                    raw_text = (completion.choices[0].message.content or "").strip()
+            for step in range(1, 8):
+                if obs.done:
                     break
-                except Exception as exc:
-                    exc_str = str(exc)
-                    if "429" in exc_str or "RESOURCE_EXHAUSTED" in exc_str:
-                        wait = 15 * (attempt + 1)
-                        print(f"  [RATE-LIMIT] Retrying in {wait}s (attempt {attempt+1}/3)", flush=True)
-                        time.sleep(wait)
-                    else:
-                        print(f"  [WARN] LLM call failed at step {step}: {exc}", file=sys.stderr)
+
+                prompt = build_user_prompt(
+                    ticket_id=obs.current_ticket_id,
+                    ticket_summary=obs.ticket_summary,
+                    student_info=obs.student_profile_snippet,
+                    kb=obs.knowledge_base_snippet or "",
+                    conversation=obs.conversation_history,
+                    step=step,
+                )
+
+                if step > 1:
+                    time.sleep(13)
+
+                raw_text = ""
+                for attempt in range(3):
+                    try:
+                        completion = client.chat.completions.create(
+                            model=MODEL_NAME,
+                            messages=[
+                                {"role": "system", "content": SYSTEM_PROMPT},
+                                {"role": "user", "content": prompt},
+                            ],
+                            temperature=0.0,
+                            max_tokens=400,
+                        )
+                        raw_text = (completion.choices[0].message.content or "").strip()
                         break
+                    except Exception as exc:
+                        exc_str = str(exc)
+                        if "429" in exc_str or "RESOURCE_EXHAUSTED" in exc_str:
+                            wait = 15 * (attempt + 1)
+                            print(f"  [RATE-LIMIT] Retrying in {wait}s (attempt {attempt+1}/3)", flush=True)
+                            time.sleep(wait)
+                        else:
+                            print(f"  [WARN] LLM call failed at step {step}: {exc}", file=sys.stderr)
+                            break
 
-            action_type, payload = parse_llm_response(raw_text)
-            action = SupportSphereAction(action_type=action_type, payload=payload)
+                action_type, payload = parse_llm_response(raw_text)
+                action = SupportSphereAction(action_type=action_type, payload=payload)
 
-            obs = env.step(action)
-            reward: float = obs.reward if obs.reward is not None else 0.0
-            rewards.append(reward)
-            steps_taken = step
+                obs = env.step(action)
+                reward: float = obs.reward if obs.reward is not None else 0.0
+                rewards.append(reward)
+                steps_taken = step
 
-            trajectory.append({
-                "step": step,
-                "action_type": action_type,
-                "payload": payload,
-                "reward": reward,
-                "done": obs.done,
-            })
+                trajectory.append({
+                    "step": step,
+                    "action_type": action_type,
+                    "payload": payload,
+                    "reward": reward,
+                    "done": obs.done,
+                })
 
-            log_step(step=step, action=f"{action_type}: {payload.get('message', '')[:80]}", reward=reward, done=obs.done)
+                log_step(step=step, action=f"{action_type}: {payload.get('message', '')[:80]}", reward=reward, done=obs.done)
 
-        # --- Scores ---
-        env_score: float = sum(rewards) / max(len(rewards), 1)
-        env_score = max(0.0, min(1.0, env_score))
+            # --- Scores ---
+            env_score = sum(rewards) / max(len(rewards), 1)
+            env_score = max(0.0, min(1.0, float(env_score)))
 
-        grader_score: float = grade_task(task_name, trajectory)
-        total_grader_score += grader_score
+            raw_grader = grade_task(task_name, trajectory)
+            grader_score = max(0.0, min(1.0, float(raw_grader)))
+            total_grader_score += grader_score
+            success = grader_score >= 0.5
 
-        success: bool = grader_score >= 0.5
-
-        log_end(success=success, steps=steps_taken, score=env_score, grader_score=grader_score, rewards=rewards)
-        print(f"  -> {task_name} env_score={env_score:.3f}  grader_score={grader_score:.3f}")
+        finally:
+            log_end(success=success, steps=steps_taken, score=env_score, grader_score=grader_score, rewards=rewards)
+            print(f"  -> {task_name} env_score={env_score:.3f}  grader_score={grader_score:.3f}")
 
     # --- Summary ---
     avg_grader: float = total_grader_score / 3.0
