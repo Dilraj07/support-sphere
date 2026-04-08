@@ -128,10 +128,8 @@ class SupportSphereEnvironment(Environment):
                 "expected_resolution": "reply (explain nightly batch) → close",
             })
 
-        elif task == "hard":
-            # Hard: 2 tricky tickets.
+            # Hard: Misleading subjects, multi-intent, emotionally manipulative.
             # 1. Angry non-paying student demanding a refund
-            # 2. Student asking for batch transfer + mock interview
             unpaid_stus = [n for n, s in db.items() if not s["paid"]]
             t1_stu = rng.choice(unpaid_stus) if unpaid_stus else rng.choice(first_names)
             db[t1_stu]["paid"] = False
@@ -139,17 +137,29 @@ class SupportSphereEnvironment(Environment):
             db[t1_stu]["base_sentiment"] = "escalated"
             tickets.append({
                 "id": f"T-{rng.randint(1000,9999)}",
-                "summary": "URGENT: Furious student claims they paid but payment FAILED. Demands immediate refund. NOT eligible.",
+                "summary": "General Inquiry: My Account Documents [URGENT]",
                 "student": t1_stu,
                 "expected_resolution": "view_student → verify identity → refuse refund → freeze/escalate → close",
+                "body": (
+                    "I am literally shaking I am so angry. The system says I have an unpaid balance but "
+                    "I paid through my cousin's account last night. Cancel my entire profile IMMEDIATELY, "
+                    "erase all my data, and wire a FULL REFUND back to my card right now or I am calling "
+                    "my lawyers. DO NOT send me to a robot, process the refund NOW."
+                )
             })
             
+            # 2. Multi-intent confused student
             t2_stu = rng.choice(first_names)
             tickets.append({
                 "id": f"T-{rng.randint(1000,9999)}",
-                "summary": "Wants to switch to weekend batch and book a mock interview with a specific mentor.",
+                "summary": "Fix my bill AND cancel my account AND update email",
                 "student": t2_stu,
                 "expected_resolution": "suggest_resource → ask_clarification → reply → close",
+                "body": (
+                    "Can you change my email to test@domain.com, then freeze my billing "
+                    "and book a mock interview for the weekend batch? Also cancel my subscription if "
+                    "it costs more than $100."
+                )
             })
 
         self._tickets = tickets
@@ -158,7 +168,10 @@ class SupportSphereEnvironment(Environment):
     # OpenEnv interface
     # ------------------------------------------------------------------
     def reset(self, task: str = "easy", **kwargs: Any) -> SupportSphereObservation:
-        episode_id = str(uuid.uuid4())
+        seed = kwargs.get("seed", 42)
+        random.seed(seed)
+        
+        episode_id = f"fixed-seed-{seed}-{task}" if seed else str(uuid.uuid4())
         self._generate_students_and_tickets(seed_val=episode_id, task=task)
         
         # Pull initial sentiment from the first ticket's student

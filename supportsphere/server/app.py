@@ -14,3 +14,7 @@ app = create_fastapi_app(
     action_cls=SupportSphereAction,
     observation_cls=SupportSphereObservation,
 )
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "version": "1.0.0"}
