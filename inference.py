@@ -1,13 +1,14 @@
 """SupportSphere inference script -- Hackathon-compliant.
 
 Runs all 3 tasks (easy, medium, hard) against the local environment,
-calls Gemini 2.5 Flash via the OpenAI-compatible endpoint, and logs
+calls an LLM via the OpenAI-compatible endpoint, and logs
 structured [START] / [STEP] / [END] output for judges.
 
 Environment variables (auto-loaded from .env):
-    GEMINI_API_KEY  -- Your Gemini API key
-    API_BASE_URL    -- Override; defaults to Gemini OpenAI compat endpoint
-    MODEL_NAME      -- Override; defaults to gemini-2.5-flash
+    OPENAI_API_KEY  -- API key (injected by validator)
+    API_BASE_URL    -- Override; defaults to standard OpenAI endpoint
+    MODEL_NAME      -- Override; defaults to gpt-4o-mini
+    GEMINI_API_KEY  -- Alternative key (local dev)
     HF_TOKEN        -- Alternative key name (hackathon convention)
 """
 
@@ -28,18 +29,34 @@ load_dotenv()
 
 API_BASE_URL: str = os.getenv(
     "API_BASE_URL",
-    "https://generativelanguage.googleapis.com/v1beta/openai/",
+    "https://api.openai.com/v1",
 )
-MODEL_NAME: str = os.getenv("MODEL_NAME", "gemini-2.5-flash")
+MODEL_NAME: str = os.getenv("MODEL_NAME", "gpt-4o-mini")
 API_KEY: str = (
-    os.getenv("GEMINI_API_KEY")
+    os.getenv("OPENAI_API_KEY")
+    or os.getenv("GEMINI_API_KEY")
     or os.getenv("HF_TOKEN")
-    or os.getenv("OPENAI_API_KEY")
     or ""
 )
 
+# Model fallback chain — if primary model isn't registered in the validator's
+# LiteLLM proxy, we try these in order before giving up.
+MODEL_FALLBACKS: List[str] = [
+    MODEL_NAME,
+    "gpt-4o-mini",
+    "gpt-3.5-turbo",
+]
+# Deduplicate while preserving order
+_seen: set = set()
+_unique_fallbacks: List[str] = []
+for _m in MODEL_FALLBACKS:
+    if _m not in _seen:
+        _seen.add(_m)
+        _unique_fallbacks.append(_m)
+MODEL_FALLBACKS = _unique_fallbacks
+
 if not API_KEY:
-    print("[FATAL] No API key found. Set GEMINI_API_KEY in .env or export HF_TOKEN.", file=sys.stderr)
+    print("[FATAL] No API key found. Set OPENAI_API_KEY / GEMINI_API_KEY in .env or export HF_TOKEN.", file=sys.stderr)
     sys.exit(1)
 
 # ---------------------------------------------------------------------------
@@ -222,10 +239,16 @@ def main() -> None:
                     time.sleep(13)
 
                 raw_text = ""
-                for attempt in range(3):
+                # Try each model in the fallback chain; on 400/NotFound rotate to next.
+                active_model = MODEL_NAME
+                for attempt in range(3 * len(MODEL_FALLBACKS)):
+                    model_idx = attempt // 3
+                    if model_idx >= len(MODEL_FALLBACKS):
+                        break
+                    active_model = MODEL_FALLBACKS[model_idx]
                     try:
                         completion = client.chat.completions.create(
-                            model=MODEL_NAME,
+                            model=active_model,
                             messages=[
                                 {"role": "system", "content": SYSTEM_PROMPT},
                                 {"role": "user", "content": prompt},
@@ -238,9 +261,14 @@ def main() -> None:
                     except Exception as exc:
                         exc_str = str(exc)
                         if "429" in exc_str or "RESOURCE_EXHAUSTED" in exc_str:
-                            wait = 15 * (attempt + 1)
-                            print(f"  [RATE-LIMIT] Retrying in {wait}s (attempt {attempt+1}/3)", flush=True)
+                            # Rate limit: wait and retry same model
+                            wait = 15 * ((attempt % 3) + 1)
+                            print(f"  [RATE-LIMIT] model={active_model} retrying in {wait}s (attempt {attempt+1})", flush=True)
                             time.sleep(wait)
+                        elif any(code in exc_str for code in ["400", "404", "NotFoundError", "not exist", "model_not_found"]):
+                            # Model not available — rotate to next fallback immediately
+                            print(f"  [WARN] Model '{active_model}' unavailable: {exc}", file=sys.stderr)
+                            attempt = (model_idx + 1) * 3 - 1  # jump to next model slot
                         else:
                             print(f"  [WARN] LLM call failed at step {step}: {exc}", file=sys.stderr)
                             break
