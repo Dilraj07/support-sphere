@@ -13,7 +13,7 @@ WORKDIR /app
 RUN pip install --no-cache-dir --upgrade pip
 
 COPY --chown=appuser:appuser pyproject.toml /app/
-COPY --chown=appuser:appuser Readme.md /app/
+COPY --chown=appuser:appuser README.md /app/
 COPY --chown=appuser:appuser supportsphere /app/supportsphere/
 
 RUN pip install --no-cache-dir .
