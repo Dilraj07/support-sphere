@@ -300,6 +300,11 @@ def main() -> None:
             total_grader_score += grader_score
             success = grader_score >= 0.5
 
+        except Exception as e:
+            print(f"  [FATAL] Unhandled exception in task '{task_name}': {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
+
         finally:
             log_end(success=success, steps=steps_taken, score=env_score, grader_score=grader_score, rewards=rewards)
             print(f"  -> {task_name} env_score={env_score:.3f}  grader_score={grader_score:.3f}")

@@ -128,6 +128,7 @@ class SupportSphereEnvironment(Environment):
                 "expected_resolution": "reply (explain nightly batch) → close",
             })
 
+        elif task == "hard":
             # Hard: Misleading subjects, multi-intent, emotionally manipulative.
             # 1. Angry non-paying student demanding a refund
             unpaid_stus = [n for n, s in db.items() if not s["paid"]]
