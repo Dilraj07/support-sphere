@@ -1,3 +1,13 @@
+---
+title: Support Sphere
+emoji: 🦀
+colorFrom: indigo
+colorTo: purple
+sdk: docker
+app_file: app.py
+pinned: false
+---
+
 # SupportSphere
 
 **Real-world EdTech Customer Support Simulator**
