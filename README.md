@@ -1,3 +1,11 @@
+---
+title: Support Sphere
+emoji: 🏢
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+pinned: false
+---
 # SupportSphere
 
 **Real-world EdTech Customer Support Simulator**
