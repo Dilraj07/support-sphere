@@ -121,4 +121,4 @@ python inference.py
 
 ---
 
-*Built with [OpenEnv](https://github.com/openenv) • Licensed under MIT*
+*Built with [OpenEnv](https://github.com/openenv) 
