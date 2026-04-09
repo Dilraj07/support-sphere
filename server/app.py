@@ -1,7 +1,8 @@
-# server/app.py
-# Required by openenv validate as the server entry point
-from supportsphere.server.app import app  
+from supportsphere.server.app import app
+import uvicorn
+
+def main():
+    uvicorn.run(app, host="0.0.0.0", port=7860)
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=7860)
+    main()
