@@ -14,5 +14,3 @@ dependencies = [
 [tool.uv]
 dev-dependencies = ["pytest", "httpx"]
 
-[project.scripts]
-server = "server.app:main"

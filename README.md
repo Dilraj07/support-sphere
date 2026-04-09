@@ -30,7 +30,7 @@ Unlike toy environments or simple chat simulations, SupportSphere replicates gen
 
 EdTech companies lose millions annually due to slow or poor support. A well-trained agent can reduce response time by 70%, increase first-contact resolution rates, and dramatically improve Net Promoter Scores. SupportSphere fills a critical gap in the OpenEnv ecosystem: A dynamic constraint-based customer support simulation built for autonomous AI agents. Features procedural student generation, exact policy enforcement, and realistic escalation pathways.
 
-## Baseline scores (Qwen2.5-72B)
+## Baseline scores (Qwen/Qwen2.5-72B-Instruct)
 | Task   | Score |
 |--------|-------|
 | easy   | 0.81  |

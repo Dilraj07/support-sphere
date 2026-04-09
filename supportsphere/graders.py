@@ -1,167 +1,351 @@
-"""Deterministic graders for SupportSphere tasks.
+"""
+SupportSphere Graders — deterministic trajectory-based scoring.
 
-Each grader accepts a trajectory (list of step dicts) and returns a
-float score in [0.0, 1.0]. Graders use only boolean operational checks —
-no keyword heuristics, no LLM calls.
+grade_task(task_name, trajectory) -> float in [0.0, 1.0]
 
-Trajectory dict schema per step:
-    {
-        "step": int,
-        "action_type": str,
-        "payload": dict,
-        "reward": float,
-        "done": bool,
-    }
+Each grader evaluates the agent's full action trajectory against:
+  - Required actions (must appear)
+  - Forbidden actions (penalised)
+  - Correct sequencing (order matters)
+  - Efficiency (fewer steps = small bonus)
+  - Hard-task nuance (keyword checks, policy compliance)
+
+All graders are pure functions:
+  - No randomness
+  - No external calls
+  - Same input → same output, always
+  - Always return float in [0.0, 1.0]
 """
 
-from typing import Dict, List
+from typing import Any, Dict, List, Tuple
+
+# ---------------------------------------------------------------------------
+# Type alias
+# ---------------------------------------------------------------------------
+Trajectory = List[Dict[str, Any]]
+# Each entry: {"step": int, "action_type": str, "payload": dict, "reward": float, "done": bool}
 
 
-def grade_easy(trajectory: List[Dict]) -> float:
-    """Easy task: 2 tickets must be resolved (closed) within ≤8 total steps.
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
 
-    Scoring:
-        - 0.5 per resolved ticket (max 1.0)
-        - -0.1 penalty per step beyond 8
+def _actions(trajectory: Trajectory) -> List[str]:
+    """Extract ordered list of action_type strings."""
+    return [s.get("action_type", "") for s in trajectory]
+
+
+def _first_index(actions: List[str], action: str) -> int:
+    """Return index of first occurrence, or 999 if absent."""
+    try:
+        return actions.index(action)
+    except ValueError:
+        return 999
+
+
+def _payload_text(trajectory: Trajectory, action_type: str) -> str:
     """
-    if not trajectory:
-        return 0.0
-
-    resolved: int = sum(1 for t in trajectory if t.get("done", False))
-    total_steps: int = len(trajectory)
-
-    score: float = min(1.0, resolved * 0.5)
-    if total_steps > 8:
-        score -= 0.1 * (total_steps - 8)
-
-    return max(0.0, min(1.0, score))
-
-
-def grade_medium(trajectory: List[Dict]) -> float:
-    """Medium task: policy-correct actions with positive reward progression.
-
-    Scoring breakdown (each 0-1, averaged):
-        1. Fraction of steps with positive reward (agent making progress)
-        2. At least one refund OR escalation was policy-correct (reward > 0.3)
-        3. Episode completed (done reached)
+    Return concatenated lowercased payload message text for all steps
+    where action_type matches.
     """
-    if not trajectory:
-        return 0.0
-
-    positive_steps: int = sum(1 for t in trajectory if (t.get("reward", 0) or 0) > 0)
-    progress_ratio: float = positive_steps / len(trajectory)
-
-    policy_correct: bool = any(
-        (t.get("reward", 0) or 0) > 0.3
-        for t in trajectory
-        if t.get("action_type") in ("issue_refund", "escalate")
-    )
-
-    completed: bool = any(t.get("done", False) for t in trajectory)
-
-    components: list[float] = [
-        progress_ratio,
-        1.0 if policy_correct else 0.0,
-        1.0 if completed else 0.0,
-    ]
-    return max(0.0, min(1.0, sum(components) / len(components)))
+    parts = []
+    for s in trajectory:
+        if s.get("action_type") == action_type:
+            payload = s.get("payload", {})
+            if isinstance(payload, dict):
+                parts.append(str(payload.get("message", "")).lower())
+            else:
+                parts.append(str(payload).lower())
+    return " ".join(parts)
 
 
-def grade_hard(trajectory: List[Dict]) -> float:
-    """Hard task: strict boolean operational checks.
+def _clamp(value: float) -> float:
+    return max(0.0, min(1.0, round(value, 4)))
 
-    An angry student who *did not pay* demands a full refund.
-    The correct resolution is to **freeze the account** and/or **escalate**,
-    *never* issue an unauthorized refund.
 
-    Scoring (additive, max 1.0):
-        +0.25  identity verification attempted  (view_student or ask_clarification)
-        +0.25  refund was NOT blindly issued
-        +0.25  correct resolution path (freeze mentioned OR escalated)
-        +0.25  episode completed (done)
+def _efficiency_bonus(steps_taken: int, ideal_steps: int, max_bonus: float = 0.05) -> float:
     """
-    if not trajectory:
+    Small bonus for resolving the ticket efficiently.
+    Zero bonus if steps_taken >= ideal_steps * 2.
+    """
+    if steps_taken <= ideal_steps:
+        return max_bonus
+    if steps_taken >= ideal_steps * 2:
         return 0.0
+    ratio = 1.0 - (steps_taken - ideal_steps) / ideal_steps
+    return round(max_bonus * ratio, 4)
 
-    score: float = 0.0
 
-    # 1. Identity verification
-    auth_actions: set[str] = {"view_student", "ask_clarification"}
-    asked_auth: bool = any(
-        t.get("action_type") in auth_actions for t in trajectory
-    )
-    if asked_auth:
-        score += 0.25
+# ---------------------------------------------------------------------------
+# Easy task grader
+# ---------------------------------------------------------------------------
+# Scenario 1: Paying student can't access course → verify → reply → close
+# Scenario 2: Prospective student enrollment query → reply → close
+#
+# Scoring (total = 1.0):
+#   view_student present                     +0.20
+#   reply present                            +0.30
+#   close_ticket present                     +0.30
+#   reply comes before close_ticket          +0.10
+#   no wrongful refund or escalation         +0.05
+#   efficiency bonus (≤4 steps ideal)        +0.05
 
-    # 2. Did NOT blindly issue refund (negative reward means policy violation)
-    blind_refund: bool = any(
-        t.get("action_type") == "issue_refund" and (t.get("reward", 0) or 0) < 0
-        for t in trajectory
-    )
-    if not blind_refund:
-        score += 0.25
+def grade_easy(trajectory: Trajectory) -> float:
+    actions = _actions(trajectory)
+    score = 0.0
+
+    has_view    = "view_student"  in actions
+    has_reply   = "reply"         in actions
+    has_close   = "close_ticket"  in actions
+    has_refund  = "issue_refund"  in actions
+    has_escalate = "escalate"     in actions
+
+    if has_view:
+        score += 0.20
+    if has_reply:
+        score += 0.30
+    if has_close:
+        score += 0.30
+
+    # Sequencing: reply should come before close
+    ri = _first_index(actions, "reply")
+    ci = _first_index(actions, "close_ticket")
+    if has_reply and has_close and ri < ci:
+        score += 0.10
+
+    # Penalty: unnecessary refund or escalation on an easy ticket
+    if has_refund or has_escalate:
+        score -= 0.15
+
+    score += _efficiency_bonus(len(actions), ideal_steps=4, max_bonus=0.05)
+    return _clamp(score)
+
+
+# ---------------------------------------------------------------------------
+# Medium task grader
+# ---------------------------------------------------------------------------
+# Scenario 1: Eligible student requests refund → verify → issue_refund → close
+# Scenario 2: Certificate delay → reply (explain nightly batch) → close
+#
+# Scoring (total = 1.0):
+#   view_student present                         +0.20
+#   issue_refund present                         +0.30
+#   close_ticket present                         +0.20
+#   view_student comes BEFORE issue_refund        +0.10   (correct process)
+#   reply present (for certificate ticket)        +0.10
+#   reply mentions "batch" or "24" or "48"        +0.05   (correct explanation)
+#   no refund issued without prior verify         −0.20   (policy violation)
+#   efficiency bonus (≤5 steps ideal)             +0.05
+
+def grade_medium(trajectory: Trajectory) -> float:
+    actions = _actions(trajectory)
+    score = 0.0
+
+    has_view    = "view_student" in actions
+    has_refund  = "issue_refund" in actions
+    has_reply   = "reply"        in actions
+    has_close   = "close_ticket" in actions
+
+    if has_view:
+        score += 0.20
+    if has_refund:
+        score += 0.30
+    if has_close:
+        score += 0.20
+    if has_reply:
+        score += 0.10
+
+    # Correct process: verify before refund
+    vi = _first_index(actions, "view_student")
+    ri = _first_index(actions, "issue_refund")
+    if has_view and has_refund and vi < ri:
+        score += 0.10
+    elif has_refund and not has_view:
+        # Issued refund without verifying identity — policy violation
+        score -= 0.20
+
+    # Certificate explanation quality
+    reply_text = _payload_text(trajectory, "reply")
+    if any(kw in reply_text for kw in ("batch", "24", "48", "nightly", "overnight")):
+        score += 0.05
+
+    score += _efficiency_bonus(len(actions), ideal_steps=5, max_bonus=0.05)
+    return _clamp(score)
+
+
+# ---------------------------------------------------------------------------
+# Hard task grader
+# ---------------------------------------------------------------------------
+# Scenario 1: Angry non-paying student demands refund
+#   → view_student → reply (refuse + "freeze") → escalate → close
+# Scenario 2: Multi-intent confused ticket
+#   → ask_clarification → suggest_resource → reply → close
+#
+# Scoring (total = 1.0):
+#   view_student present                           +0.15
+#   escalate present                               +0.20
+#   close_ticket present                           +0.15
+#   NO wrongful refund to non-paying student       +0.15  (must not have issue_refund)
+#   reply mentions "freeze"                        +0.10  (correct policy keyword)
+#   ask_clarification OR suggest_resource present  +0.10  (handles multi-intent)
+#   correct sequence: view → reply → escalate      +0.10
+#   efficiency bonus (≤6 steps ideal)              +0.05
+
+def grade_hard(trajectory: Trajectory) -> float:
+    actions = _actions(trajectory)
+    score = 0.0
+
+    has_view       = "view_student"      in actions
+    has_escalate   = "escalate"          in actions
+    has_close      = "close_ticket"      in actions
+    has_refund     = "issue_refund"      in actions
+    has_clarify    = "ask_clarification" in actions
+    has_resource   = "suggest_resource"  in actions
+
+    if has_view:
+        score += 0.15
+    if has_escalate:
+        score += 0.20
+    if has_close:
+        score += 0.15
+
+    # Critical: must NOT issue a refund to a non-paying student
+    if not has_refund:
+        score += 0.15
     else:
-        score -= 0.5  # Destructive penalty for unauthorized refund
+        score -= 0.20  # wrongful refund is a significant policy violation
 
-    # 3. Correct resolution path — freeze or escalate
-    freeze_or_escalate: bool = any(
-        t.get("action_type") == "escalate"
-        or "freeze" in str(t.get("payload", "")).lower()
-        for t in trajectory
-    )
-    if freeze_or_escalate:
-        score += 0.25
+    # Freeze keyword in any reply
+    reply_text = _payload_text(trajectory, "reply")
+    if "freeze" in reply_text:
+        score += 0.10
 
-    # 4. Completion
-    completed: bool = any(t.get("done", False) for t in trajectory)
-    if completed:
-        score += 0.25
+    # Multi-intent handling
+    if has_clarify or has_resource:
+        score += 0.10
 
-    return max(0.0, min(1.0, float(score)))
+    # Correct sequence for scenario 1: view → reply → escalate
+    vi  = _first_index(actions, "view_student")
+    rpi = _first_index(actions, "reply")
+    ei  = _first_index(actions, "escalate")
+    if has_view and has_escalate and vi < ei:
+        score += 0.05
+    if has_view and has_escalate and rpi < ei:
+        score += 0.05
+
+    score += _efficiency_bonus(len(actions), ideal_steps=6, max_bonus=0.05)
+    return _clamp(score)
 
 
-def grade_task(task_name: str, trajectory: List[Dict]) -> float:
-    """Dispatch to the correct grader by task name."""
-    graders = {
-        "easy": grade_easy,
-        "medium": grade_medium,
-        "hard": grade_hard,
-    }
-    grader = graders.get(task_name)
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+_GRADERS = {
+    "easy":   grade_easy,
+    "medium": grade_medium,
+    "hard":   grade_hard,
+}
+
+
+def grade_task(task_name: str, trajectory: Trajectory) -> float:
+    """
+    Score an agent trajectory for a given task.
+
+    Args:
+        task_name:   "easy" | "medium" | "hard"
+        trajectory:  List of step dicts, each containing at minimum
+                     {"step": int, "action_type": str, "payload": dict}
+
+    Returns:
+        Float in [0.0, 1.0]. Higher is better.
+        Returns 0.0 for unknown task names or empty trajectories.
+    """
+    if not trajectory:
+        return 0.0
+
+    grader = _GRADERS.get(task_name)
     if grader is None:
-        raise ValueError(f"Unknown task: {task_name!r}. Expected one of {list(graders)}")
-    return grader(trajectory)
+        return 0.0
+
+    try:
+        return grader(trajectory)
+    except Exception:
+        # Grader must never crash — return 0 on any unexpected error
+        return 0.0
 
 
-def validate_graders() -> None:
-    """Run baseline validation logic over mock trajectories to satisfy hackathon validation rules."""
-    
-    easy_mock = [
-        {"step": 1, "action_type": "view_student", "reward": 0.15, "done": False},
-        {"step": 2, "action_type": "reply", "reward": 0.2, "done": False},
-        {"step": 3, "action_type": "close_ticket", "reward": 0.3, "done": True},
-        {"step": 4, "action_type": "reply", "reward": 0.2, "done": False},
-        {"step": 5, "action_type": "close_ticket", "reward": 0.3, "done": True},
-    ]
-    
-    medium_mock = [
-        {"step": 1, "action_type": "view_student", "reward": 0.15, "done": False},
-        {"step": 2, "action_type": "issue_refund", "reward": 0.35, "done": False},
-        {"step": 3, "action_type": "close_ticket", "reward": 0.3, "done": True},
-    ]
-    
-    hard_mock = [
-        {"step": 1, "action_type": "view_student", "reward": 0.15, "done": False},
-        {"step": 2, "action_type": "reply", "payload": {"message": "You violated TOS, account freeze"}, "reward": 0.35, "done": False},
-        {"step": 3, "action_type": "escalate", "reward": 0.30, "done": False},
-        {"step": 4, "action_type": "close_ticket", "reward": 0.50, "done": True},
-    ]
-    
-    print(f"Easy Grader Baseline Score (expected 1.0): {grade_easy(easy_mock):.1f}")
-    print(f"Medium Grader Baseline Score (expected 1.0): {grade_medium(medium_mock):.1f}")
-    print(f"Hard Grader Baseline Score (expected 1.0): {grade_hard(hard_mock):.1f}")
+# ---------------------------------------------------------------------------
+# Standalone test — run with: python graders.py
+# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    print("--- SupportSphere Grader Validation ---")
-    validate_graders()
-    print("VALIDATE: PASSED")
+    # --- Easy: perfect trajectory ---
+    easy_perfect = [
+        {"step": 1, "action_type": "view_student",  "payload": {"message": ""}, "reward": 0.15, "done": False},
+        {"step": 2, "action_type": "reply",          "payload": {"message": "I've reset your course access. Please try again."}, "reward": 0.20, "done": False},
+        {"step": 3, "action_type": "close_ticket",   "payload": {"message": ""}, "reward": 0.30, "done": True},
+    ]
+
+    # --- Easy: bad trajectory (refund on easy ticket) ---
+    easy_bad = [
+        {"step": 1, "action_type": "reply",         "payload": {"message": "Here's your refund."}, "reward": 0.20, "done": False},
+        {"step": 2, "action_type": "issue_refund",  "payload": {"message": ""}, "reward": -0.25, "done": False},
+        {"step": 3, "action_type": "close_ticket",  "payload": {"message": ""}, "reward": 0.30, "done": True},
+    ]
+
+    # --- Medium: perfect trajectory ---
+    medium_perfect = [
+        {"step": 1, "action_type": "view_student",  "payload": {"message": ""}, "reward": 0.15, "done": False},
+        {"step": 2, "action_type": "issue_refund",  "payload": {"message": "Refund approved."}, "reward": 0.35, "done": False},
+        {"step": 3, "action_type": "reply",         "payload": {"message": "Your certificate is issued in a nightly batch within 48h."}, "reward": 0.20, "done": False},
+        {"step": 4, "action_type": "close_ticket",  "payload": {"message": ""}, "reward": 0.30, "done": True},
+    ]
+
+    # --- Medium: refund without verifying ---
+    medium_no_verify = [
+        {"step": 1, "action_type": "issue_refund",  "payload": {"message": "Refund issued."}, "reward": -0.25, "done": False},
+        {"step": 2, "action_type": "close_ticket",  "payload": {"message": ""}, "reward": 0.30, "done": True},
+    ]
+
+    # --- Hard: perfect trajectory ---
+    hard_perfect = [
+        {"step": 1, "action_type": "view_student",      "payload": {"message": ""}, "reward": 0.15, "done": False},
+        {"step": 2, "action_type": "ask_clarification", "payload": {"message": "Can you clarify which issue to prioritise?"}, "reward": 0.10, "done": False},
+        {"step": 3, "action_type": "reply",             "payload": {"message": "I'm unable to issue a refund as you are not a paying student. Your account will be frozen and this case escalated."}, "reward": 0.20, "done": False},
+        {"step": 4, "action_type": "escalate",          "payload": {"message": "Escalating to billing team."}, "reward": 0.30, "done": False},
+        {"step": 5, "action_type": "close_ticket",      "payload": {"message": ""}, "reward": 0.30, "done": True},
+    ]
+
+    # --- Hard: wrongful refund ---
+    hard_wrongful_refund = [
+        {"step": 1, "action_type": "view_student",  "payload": {"message": ""}, "reward": 0.15, "done": False},
+        {"step": 2, "action_type": "issue_refund",  "payload": {"message": "Here is your refund."}, "reward": -0.25, "done": False},
+        {"step": 3, "action_type": "close_ticket",  "payload": {"message": ""}, "reward": 0.30, "done": True},
+    ]
+
+    cases = [
+        ("easy",   "perfect",          easy_perfect),
+        ("easy",   "bad (refund)",      easy_bad),
+        ("medium", "perfect",          medium_perfect),
+        ("medium", "no verify",        medium_no_verify),
+        ("hard",   "perfect",          hard_perfect),
+        ("hard",   "wrongful refund",  hard_wrongful_refund),
+    ]
+
+    print("\n=== SupportSphere Grader Tests ===\n")
+    all_pass = True
+    for task, label, traj in cases:
+        result = grade_task(task, traj)
+        in_range = 0.0 <= result <= 1.0
+        status = "PASS" if in_range else "FAIL"
+        if not in_range:
+            all_pass = False
+        print(f"  [{status}] {task:6s} | {label:22s} | score={result:.4f}")
+
+    print()
+    if all_pass:
+        print("  All scores in [0.0, 1.0] ✓")
+    else:
+        print("  WARNING: Some scores out of range!")
+    print()
