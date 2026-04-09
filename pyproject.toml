@@ -13,7 +13,7 @@ dependencies = [
 
 [project.scripts]
 openenv = "openenv.cli:main"
-server = "server.app:main"
+server = "server.app:app"
 
 [tool.uv]
 dev-dependencies = ["pytest", "httpx"]
