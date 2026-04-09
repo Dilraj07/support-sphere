@@ -11,6 +11,10 @@ dependencies = [
     "python-dotenv",
 ]
 
+[project.scripts]
+openenv = "openenv.cli:main"
+server = "server.app:main"
+
 [tool.uv]
 dev-dependencies = ["pytest", "httpx"]
 
